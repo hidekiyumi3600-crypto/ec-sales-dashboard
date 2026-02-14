@@ -35,3 +35,4 @@ data/*.csv
 
 # Streamlit
 .streamlit/
+config/license_dates.json
