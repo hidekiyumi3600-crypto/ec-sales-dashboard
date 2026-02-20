@@ -473,6 +473,10 @@ def main():
     if st.sidebar.button("🔄 データ再取得"):
         st.cache_data.clear()
         _clear_all_disk_cache()
+        # session_stateのキャッシュデータをクリア
+        for key in list(st.session_state.keys()):
+            if key.startswith("sales_"):
+                del st.session_state[key]
         st.session_state.pop("yahoo_api_failed", None)
         st.rerun()
 
@@ -646,26 +650,47 @@ def main():
     ly_start = datetime.combine(last_year_month_start, datetime.min.time())
     ly_end = datetime.combine(last_year_yesterday, datetime.max.time())
 
-    # 今月・昨年・Yahooを並列取得（ディスクキャッシュがあれば即座に返る）
-    with st.spinner("売上データを取得中..."):
+    # session_stateキャッシュキー（日付が変わるとキーも変わる）
+    _cache_key = f"sales_{month_start}_{yesterday}"
+
+    if _cache_key in st.session_state:
+        # キャッシュヒット → API呼び出しなしで即表示
+        df_current = st.session_state[_cache_key]["current"]
+        df_last_year = st.session_state[_cache_key]["last_year"]
+    else:
+        # 初回取得: プログレスバー付きで並列取得
+        _progress = st.progress(0, text="楽天APIに接続中...")
+
         with ThreadPoolExecutor(max_workers=3) as executor:
             f_current = executor.submit(_fetch_rakuten_sales, current_start, current_end)
             f_last_year = executor.submit(_fetch_rakuten_sales, ly_start, ly_end)
             f_yahoo = executor.submit(_fetch_yahoo_sales, current_start, current_end) if is_yahoo_enabled else None
 
+            _progress.progress(10, text="今月の売上データを取得中...")
             df_rakuten_current = f_current.result()
             if not df_rakuten_current.empty and "source" not in df_rakuten_current.columns:
                 df_rakuten_current["source"] = "楽天"
 
+            _progress.progress(50, text="昨年の比較データを取得中...")
             df_last_year = f_last_year.result()
             if not df_last_year.empty and "source" not in df_last_year.columns:
                 df_last_year["source"] = "楽天"
 
+            _progress.progress(80, text="Yahooデータを確認中...")
             df_yahoo_current = f_yahoo.result() if f_yahoo else pd.DataFrame()
+
+        _progress.progress(100, text="完了!")
+        _progress.empty()
 
         # データを統合
         dfs_current = [df for df in [df_rakuten_current, df_yahoo_current] if not df.empty]
         df_current = pd.concat(dfs_current, ignore_index=True) if dfs_current else pd.DataFrame()
+
+        # session_stateに保存（次回リロード時は即表示）
+        st.session_state[_cache_key] = {
+            "current": df_current,
+            "last_year": df_last_year,
+        }
 
     processor = DataProcessor()
 

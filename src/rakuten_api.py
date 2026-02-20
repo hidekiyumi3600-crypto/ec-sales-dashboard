@@ -192,7 +192,7 @@ class RakutenAPI:
             return result.get("OrderModelList", [])
 
         all_orders = []
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = [executor.submit(_fetch_batch, b) for b in batches]
             for future in futures:
                 all_orders.extend(future.result())
