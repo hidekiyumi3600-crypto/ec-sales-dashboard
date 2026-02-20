@@ -35,6 +35,9 @@ class YahooShoppingAPI:
 
     # トークン保存ファイル
     TOKEN_FILE = Path(__file__).parent.parent / "config" / "yahoo_token.json"
+    # 公開鍵ファイル
+    PUBLIC_KEY_FILE = Path(__file__).parent.parent / "config" / "yahoo_public_key.pem"
+    PUBLIC_KEY_VERSION = "2"
 
     def __init__(
         self,
@@ -222,28 +225,56 @@ class YahooShoppingAPI:
         if self.TOKEN_FILE.exists():
             self.TOKEN_FILE.unlink()
 
-    def _make_request(self, url: str, params: dict) -> dict:
-        """APIリクエストを実行"""
+    def _generate_signature(self) -> tuple:
+        """公開鍵認証の署名を生成
+
+        Returns:
+            (signature, version) のタプル
+        """
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
+
+        public_key_pem = self.PUBLIC_KEY_FILE.read_bytes()
+        public_key = serialization.load_pem_public_key(public_key_pem)
+
+        # "SellerID:UNIXタイムスタンプ" を暗号化
+        message = f"{self.seller_id}:{int(time.time())}"
+        encrypted = public_key.encrypt(
+            message.encode("utf-8"),
+            asym_padding.PKCS1v15()
+        )
+        signature = base64.b64encode(encrypted).decode("utf-8")
+
+        return signature, self.PUBLIC_KEY_VERSION
+
+    def _make_request(self, url: str, xml_body: str) -> dict:
+        """APIリクエストを実行（POST + XML + 公開鍵認証）"""
         access_token = self._get_access_token()
 
         headers = {
             "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/xml; charset=utf-8",
         }
 
-        # セラーIDを追加
-        if self.seller_id:
-            params["sellerId"] = self.seller_id
+        # 公開鍵認証ヘッダーを追加
+        if self.PUBLIC_KEY_FILE.exists():
+            try:
+                signature, version = self._generate_signature()
+                headers["X-sws-signature"] = signature
+                headers["X-sws-signature-version"] = version
+            except Exception as e:
+                print(f"  公開鍵署名生成エラー（署名なしで続行）: {e}")
 
         try:
-            response = requests.get(
+            response = requests.post(
                 url,
                 headers=headers,
-                params=params,
-                timeout=60
+                data=xml_body.encode("utf-8"),
+                timeout=15
             )
 
             if response.status_code != 200:
-                raise YahooAPIError(f"APIエラー: HTTP {response.status_code}")
+                raise YahooAPIError(f"APIエラー: HTTP {response.status_code} - {response.text[:200]}")
 
             # XMLレスポンスをパース
             return self._parse_xml_response(response.text)
@@ -292,13 +323,35 @@ class YahooShoppingAPI:
 
         return result
 
+    def _build_order_list_xml(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        start: int = 1,
+        results_per_page: int = 100,
+    ) -> str:
+        """orderList用XMLリクエストボディを構築"""
+        return f"""<Req>
+  <Search>
+    <Result>{results_per_page}</Result>
+    <Start>{start}</Start>
+    <Sort>+order_time</Sort>
+    <Condition>
+      <OrderTimeFrom>{start_date.strftime("%Y%m%d%H%M%S")}</OrderTimeFrom>
+      <OrderTimeTo>{end_date.strftime("%Y%m%d%H%M%S")}</OrderTimeTo>
+    </Condition>
+    <Field>OrderId,OrderTime,OrderStatus,TotalPrice</Field>
+  </Search>
+  <SellerId>{self.seller_id}</SellerId>
+</Req>"""
+
     def search_orders(
         self,
         start_date: datetime,
         end_date: datetime,
     ) -> list:
         """
-        注文検索API
+        注文検索API（orderList）
 
         Args:
             start_date: 検索開始日
@@ -312,17 +365,17 @@ class YahooShoppingAPI:
         results_per_page = 100
 
         while True:
-            params = {
-                "OrderTimeFrom": start_date.strftime("%Y%m%d%H%M%S"),
-                "OrderTimeTo": end_date.strftime("%Y%m%d%H%M%S"),
-                "Result": results_per_page,
-                "Start": start,
-            }
+            xml_body = self._build_order_list_xml(
+                start_date, end_date, start, results_per_page
+            )
+            result = self._make_request(self.ORDER_LIST_URL, xml_body)
 
-            result = self._make_request(self.ORDER_LIST_URL, params)
+            # orderListレスポンス: Result > Search > OrderInfo
+            search_result = result.get("Result", {}).get("Search", {})
+            if not search_result:
+                # フォールバック: Search直下の場合
+                search_result = result.get("Search", {})
 
-            # 注文リストを取得
-            search_result = result.get("Search", {})
             order_info = search_result.get("OrderInfo", [])
 
             if not order_info:
@@ -343,9 +396,19 @@ class YahooShoppingAPI:
 
         return all_orders
 
+    def _build_order_info_xml(self, order_id: str) -> str:
+        """orderInfo用XMLリクエストボディを構築（1注文ずつ）"""
+        return f"""<Req>
+  <Target>
+    <OrderId>{order_id}</OrderId>
+    <Field>OrderId,OrderTime,OrderStatus,PayStatus,SettleStatus,TotalPrice,UsePoint,ShipCharge,PayCharge,GiftCardDiscount,ItemId,Title,UnitPrice,Quantity</Field>
+  </Target>
+  <SellerId>{self.seller_id}</SellerId>
+</Req>"""
+
     def get_order_details(self, order_ids: list) -> list:
         """
-        注文詳細取得API
+        注文詳細取得API（orderInfo）- 1リクエスト1注文ID
 
         Args:
             order_ids: 注文IDリスト
@@ -358,22 +421,29 @@ class YahooShoppingAPI:
 
         all_orders = []
 
-        # 100件ずつ処理
-        batch_size = 100
-        for i in range(0, len(order_ids), batch_size):
-            batch = order_ids[i:i + batch_size]
+        for order_id in order_ids:
+            try:
+                xml_body = self._build_order_info_xml(order_id)
+                result = self._make_request(self.ORDER_INFO_URL, xml_body)
 
-            params = {
-                "OrderId": ",".join(batch),
-            }
+                # orderInfoレスポンス: ResultSet > Result > OrderInfo
+                order_info = (
+                    result.get("ResultSet", {}).get("Result", {}).get("OrderInfo")
+                )
+                if not order_info:
+                    # フォールバック: Result > OrderInfo
+                    order_info = result.get("Result", {}).get("OrderInfo")
+                if not order_info:
+                    # フォールバック: 直下のOrderInfo
+                    order_info = result.get("OrderInfo")
 
-            result = self._make_request(self.ORDER_INFO_URL, params)
+                if order_info:
+                    all_orders.append(order_info)
 
-            order_info = result.get("OrderInfo", [])
-            if not isinstance(order_info, list):
-                order_info = [order_info]
+            except YahooAPIError as e:
+                print(f"  注文詳細取得エラー ({order_id}): {e}")
+                continue
 
-            all_orders.extend(order_info)
             time.sleep(0.5)
 
         return all_orders

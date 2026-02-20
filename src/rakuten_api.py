@@ -75,7 +75,7 @@ class RakutenAPI:
                     url,
                     headers=self._get_headers(),
                     json=payload,
-                    timeout=30
+                    timeout=15
                 )
 
                 if response.status_code == 200:
@@ -115,68 +115,41 @@ class RakutenAPI:
     ) -> list:
         """
         注文検索API (searchOrder)
+        期間全体を一括検索し、ページネーションで全件取得する。
 
         Args:
             start_date: 検索開始日
             end_date: 検索終了日
-            order_progress: 注文進捗リスト（デフォルト: 発送完了済み）
+            order_progress: 注文進捗リスト（デフォルト: 全件）
 
         Returns:
             注文番号リスト
         """
         all_order_numbers = []
-
-        # 1000件制限対応: 日別に分割してリクエスト
-        current_date = start_date
-        while current_date <= end_date:
-            next_date = current_date + timedelta(days=1)
-
-            order_numbers = self._search_orders_single_day(
-                current_date,
-                min(next_date, end_date + timedelta(seconds=1)),
-                order_progress
-            )
-            all_order_numbers.extend(order_numbers)
-
-            current_date = next_date
-
-        return all_order_numbers
-
-    def _search_orders_single_day(
-        self,
-        start_datetime: datetime,
-        end_datetime: datetime,
-        order_progress: Optional[list] = None
-    ) -> list:
-        """1日分の注文を検索"""
-        order_numbers = []
         page = 1
 
         while True:
             payload = {
                 "dateType": 1,  # 注文日
-                "startDatetime": start_datetime.strftime("%Y-%m-%dT%H:%M:%S+0900"),
-                "endDatetime": end_datetime.strftime("%Y-%m-%dT%H:%M:%S+0900"),
+                "startDatetime": start_date.strftime("%Y-%m-%dT%H:%M:%S+0900"),
+                "endDatetime": end_date.strftime("%Y-%m-%dT%H:%M:%S+0900"),
                 "PaginationRequestModel": {
                     "requestRecordsAmount": MAX_ORDERS_PER_REQUEST,
                     "requestPage": page,
                 }
             }
 
-            # 注文進捗フィルター（指定がない場合は全件）
             if order_progress:
                 payload["orderProgressList"] = order_progress
 
             result = self._make_request(RAKUTEN_SEARCH_ORDER_URL, payload)
 
-            # レスポンス解析
             order_model_list = result.get("orderNumberList", [])
             if not order_model_list:
                 break
 
-            order_numbers.extend(order_model_list)
+            all_order_numbers.extend(order_model_list)
 
-            # ページネーション確認
             pagination = result.get("PaginationResponseModel", {})
             total_pages = pagination.get("totalPages", 1)
 
@@ -184,13 +157,14 @@ class RakutenAPI:
                 break
 
             page += 1
-            time.sleep(0.5)  # API負荷軽減
+            time.sleep(0.2)
 
-        return order_numbers
+        return all_order_numbers
 
     def get_orders(self, order_numbers: list) -> list:
         """
         注文詳細取得API (getOrder)
+        100件ずつのバッチを並列実行して高速化。
 
         Args:
             order_numbers: 注文番号リスト
@@ -201,24 +175,27 @@ class RakutenAPI:
         if not order_numbers:
             return []
 
-        all_orders = []
+        from concurrent.futures import ThreadPoolExecutor
 
-        # 100件ずつリクエスト（API制限）
         batch_size = 100
-        for i in range(0, len(order_numbers), batch_size):
-            batch = order_numbers[i:i + batch_size]
+        batches = [
+            order_numbers[i:i + batch_size]
+            for i in range(0, len(order_numbers), batch_size)
+        ]
 
+        def _fetch_batch(batch):
             payload = {
                 "orderNumberList": batch,
                 "version": 7,
             }
-
             result = self._make_request(RAKUTEN_GET_ORDER_URL, payload)
+            return result.get("OrderModelList", [])
 
-            order_model_list = result.get("OrderModelList", [])
-            all_orders.extend(order_model_list)
-
-            time.sleep(0.5)  # API負荷軽減
+        all_orders = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(_fetch_batch, b) for b in batches]
+            for future in futures:
+                all_orders.extend(future.result())
 
         return all_orders
 
@@ -302,30 +279,46 @@ def get_all_rakuten_apis(test_connection: bool = False) -> list:
     return apis
 
 
+def _fetch_store_sales(api, start_date: datetime, end_date: datetime) -> list:
+    """1店舗分の売上データを取得（並列処理用）"""
+    try:
+        print(f"[{api.store_name}] ", end="")
+        orders = api.get_sales_data(start_date, end_date)
+        for order in orders:
+            order["_store_name"] = api.store_name
+        return orders
+    except RakutenAPIError as e:
+        print(f"[{api.store_name}] エラー: {e}")
+        return []
+    except Exception as e:
+        print(f"[{api.store_name}] 予期しないエラー: {e}")
+        return []
+
+
 def get_all_stores_sales_data(start_date: datetime, end_date: datetime) -> list:
-    """全店舗の売上データを取得"""
-    all_orders = []
+    """全店舗の売上データを並列取得"""
+    from concurrent.futures import ThreadPoolExecutor
+
     apis = get_all_rakuten_apis()
 
     if not apis:
         print("警告: 設定された店舗がありません")
         return []
 
-    for api in apis:
-        try:
-            print(f"[{api.store_name}] ", end="")
-            orders = api.get_sales_data(start_date, end_date)
-            # 店舗名を各注文に追加
-            for order in orders:
-                order["_store_name"] = api.store_name
-            all_orders.extend(orders)
-        except RakutenAPIError as e:
-            print(f"[{api.store_name}] エラー: {e}")
-            # エラーでも続行
-            continue
-        except Exception as e:
-            print(f"[{api.store_name}] 予期しないエラー: {e}")
-            continue
+    all_orders = []
+
+    # 2店舗以上なら並列取得
+    if len(apis) >= 2:
+        with ThreadPoolExecutor(max_workers=len(apis)) as executor:
+            futures = [
+                executor.submit(_fetch_store_sales, api, start_date, end_date)
+                for api in apis
+            ]
+            for future in futures:
+                all_orders.extend(future.result())
+    else:
+        for api in apis:
+            all_orders.extend(_fetch_store_sales(api, start_date, end_date))
 
     return all_orders
 

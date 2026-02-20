@@ -1,6 +1,8 @@
 """Streamlitダッシュボード"""
 import hashlib
 import sys
+import time as time_module
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -72,28 +74,75 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-@st.cache_data(ttl=1800)
-def load_rakuten_sales_cached(start_date: datetime, end_date: datetime) -> pd.DataFrame:
-    """楽天売上データを読み込み（全店舗・キャッシュ付き）"""
+# ===== ディスクキャッシュ（サーバー再起動でも保持） =====
+CACHE_DIR = Path(__file__).parent.parent / "data" / "cache"
+CACHE_TTL_SECONDS = 7200  # 2時間
+
+
+def _disk_cache_path(prefix: str, start_date: datetime, end_date: datetime) -> Path:
+    key = f"{prefix}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+    return CACHE_DIR / f"{key}.pkl"
+
+
+def _read_disk_cache(cache_path: Path):
+    """ディスクキャッシュ読み込み（TTLチェック付き）"""
+    if cache_path.exists():
+        age = time_module.time() - cache_path.stat().st_mtime
+        if age < CACHE_TTL_SECONDS:
+            try:
+                return pd.read_pickle(cache_path)
+            except Exception:
+                pass
+    return None
+
+
+def _write_disk_cache(cache_path: Path, df: pd.DataFrame):
+    """DataFrameをディスクキャッシュに保存"""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        df.to_pickle(cache_path)
+    except Exception:
+        pass
+
+
+def _clear_all_disk_cache():
+    """ディスクキャッシュを全クリア"""
+    try:
+        if CACHE_DIR.exists():
+            for f in CACHE_DIR.glob("*.pkl"):
+                f.unlink()
+    except Exception:
+        pass
+
+
+def _fetch_rakuten_sales(start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """楽天売上データ取得（ディスクキャッシュ付き・スレッド安全）"""
+    cache_path = _disk_cache_path("rakuten", start_date, end_date)
+    cached = _read_disk_cache(cache_path)
+    if cached is not None:
+        return cached
+
     try:
         orders = get_all_stores_sales_data(start_date, end_date)
         if not orders:
             return pd.DataFrame()
         processor = DataProcessor()
         df = processor.parse_orders(orders)
+        if not df.empty:
+            _write_disk_cache(cache_path, df)
         return df
-    except RakutenAPIError as e:
-        st.error(f"楽天APIエラー: {e}")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"データ取得エラー: {e}")
+    except Exception:
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=1800)
-def load_yahoo_sales_cached(start_date: datetime, end_date: datetime) -> pd.DataFrame:
-    """Yahoo売上データを読み込み（キャッシュ付き）"""
-    # まずCSVインポートデータをチェック
+def _fetch_yahoo_sales(start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """Yahoo売上データ取得（ディスクキャッシュ付き・スレッド安全）"""
+    cache_path = _disk_cache_path("yahoo", start_date, end_date)
+    cached = _read_disk_cache(cache_path)
+    if cached is not None:
+        return cached
+
+    # CSVインポートデータをチェック
     try:
         importer = YahooCSVImporter()
         csv_data = importer.load_saved_data(start_date, end_date)
@@ -102,21 +151,41 @@ def load_yahoo_sales_cached(start_date: datetime, end_date: datetime) -> pd.Data
     except Exception:
         pass
 
-    # API認証済みの場合はAPIから取得
+    # API取得
     try:
         api = YahooShoppingAPI()
         if not api.is_authenticated():
             return pd.DataFrame()
         orders = api.get_sales_data(start_date, end_date)
         df = parse_yahoo_orders(orders)
+        if not df.empty:
+            _write_disk_cache(cache_path, df)
         return df
-    except YahooAPIError as e:
-        st.error(f"Yahoo APIエラー: {e}")
+    except Exception:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=7200)
+def load_rakuten_sales_cached(start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """楽天売上データを読み込み（メモリキャッシュ + ディスクキャッシュ）"""
+    return _fetch_rakuten_sales(start_date, end_date)
+
+
+@st.cache_data(ttl=7200)
+def load_yahoo_sales_cached(start_date: datetime, end_date: datetime) -> pd.DataFrame:
+    """Yahoo売上データを読み込み（メモリキャッシュ + ディスクキャッシュ）"""
+    return _fetch_yahoo_sales(start_date, end_date)
+
+
 def parse_yahoo_orders(orders: list) -> pd.DataFrame:
-    """Yahoo注文データをDataFrameに変換"""
+    """Yahoo注文データをDataFrameに変換
+
+    orderInfoレスポンス構造:
+      OrderInfo > OrderId, OrderTime, OrderStatus
+      OrderInfo > Pay > TotalPrice, UsePoint, GiftCardDiscount, PayCharge, ShipCharge
+      OrderInfo > Detail > TotalPrice (明細合計)
+      OrderInfo > Item (複数) > ItemId, Title, UnitPrice, Quantity, SubTotal
+    """
     if not orders:
         return pd.DataFrame()
 
@@ -135,35 +204,57 @@ def parse_yahoo_orders(orders: list) -> pd.DataFrame:
             else:
                 order_date = datetime.now()
 
-            # 注文金額
+            # 支払い情報（Pay配下）
             pay_info = order.get("Pay", {}) or {}
             total_price = int(pay_info.get("TotalPrice", 0) or 0)
             use_point = int(pay_info.get("UsePoint", 0) or 0)
-            coupon_discount = int(pay_info.get("CouponDiscount", 0) or 0)
+            gift_card_discount = int(pay_info.get("GiftCardDiscount", 0) or 0)
 
-            # 実売上（ポイント・クーポン引き後）
-            net_sales = total_price - use_point - coupon_discount
+            # TotalPriceがPay配下にない場合、Detail配下を参照
+            if total_price == 0:
+                detail_info = order.get("Detail", {}) or {}
+                total_price = int(detail_info.get("TotalPrice", 0) or 0)
 
-            # 商品情報
+            # トップレベルのTotalPriceもフォールバック
+            if total_price == 0:
+                total_price = int(order.get("TotalPrice", 0) or 0)
+
+            # 実売上（ポイント・ギフトカード割引控除後）
+            net_sales = total_price - use_point - gift_card_discount
+
+            # 商品情報（Item配下 - 複数ある場合はリスト）
             items = order.get("Item", [])
             if not isinstance(items, list):
                 items = [items] if items else []
 
-            for item in items:
-                if not item:
-                    continue
-                item_name = item.get("Title", "")
-                quantity = int(item.get("Quantity", 1) or 1)
-                unit_price = int(item.get("UnitPrice", 0) or 0)
-                item_total = int(item.get("SubTotal", unit_price * quantity) or 0)
+            if items:
+                for item in items:
+                    if not item:
+                        continue
+                    item_name = item.get("Title", "")
+                    quantity = int(item.get("Quantity", 1) or 1)
+                    unit_price = int(item.get("UnitPrice", 0) or 0)
+                    item_total = int(item.get("SubTotal", unit_price * quantity) or 0)
 
+                    records.append({
+                        "order_number": order_id,
+                        "order_date": order_date,
+                        "item_name": item_name,
+                        "quantity": quantity,
+                        "unit_price": unit_price,
+                        "subtotal": item_total,
+                        "order_net_sales": net_sales,
+                        "source": "Yahoo",
+                    })
+            else:
+                # 商品明細がない場合でも注文レコードは作成
                 records.append({
                     "order_number": order_id,
                     "order_date": order_date,
-                    "item_name": item_name,
-                    "quantity": quantity,
-                    "unit_price": unit_price,
-                    "subtotal": item_total,
+                    "item_name": "",
+                    "quantity": 1,
+                    "unit_price": total_price,
+                    "subtotal": total_price,
                     "order_net_sales": net_sales,
                     "source": "Yahoo",
                 })
@@ -306,23 +397,41 @@ def save_env_file(env_path: Path, env_vars: dict):
         f.write("\n".join(lines))
 
 
+def _get_auth_cookie() -> str:
+    """認証Cookieのトークンを生成"""
+    # パスワードハッシュ + 固定ソルトで認証トークンを作成
+    return hashlib.sha256(f"{DASHBOARD_PASSWORD}_dashboard_auth".encode()).hexdigest()[:32]
+
+
 def check_password() -> bool:
     """パスワード認証チェック。認証済みならTrueを返す。"""
     if not DASHBOARD_PASSWORD:
         return True
 
+    # session_stateで認証済み
     if st.session_state.get("authenticated"):
+        return True
+
+    # クエリパラメータでの認証トークン確認（永続ログイン用）
+    query_params = st.query_params
+    auth_token = query_params.get("auth")
+    if auth_token and auth_token == _get_auth_cookie():
+        st.session_state["authenticated"] = True
         return True
 
     st.markdown("#### 🔐 ログイン")
     st.markdown("ダッシュボードを表示するにはパスワードを入力してください。")
 
     password = st.text_input("パスワード", type="password", key="login_password")
+    remember = st.checkbox("ログイン状態を保持する", value=True, key="remember_login")
 
     if st.button("ログイン"):
         password_hash = hashlib.sha256(password.encode()).hexdigest()
         if password_hash == DASHBOARD_PASSWORD:
             st.session_state["authenticated"] = True
+            if remember:
+                # 認証トークンをURLパラメータとして保持
+                st.query_params["auth"] = _get_auth_cookie()
             st.rerun()
         else:
             st.error("パスワードが正しくありません。")
@@ -357,11 +466,14 @@ def main():
     # ログアウトボタン
     if DASHBOARD_PASSWORD and st.sidebar.button("🔓 ログアウト"):
         st.session_state["authenticated"] = False
+        st.query_params.clear()
         st.rerun()
 
     # キャッシュクリアボタン
     if st.sidebar.button("🔄 データ再取得"):
         st.cache_data.clear()
+        _clear_all_disk_cache()
+        st.session_state.pop("yahoo_api_failed", None)
         st.rerun()
 
     # ライセンスキー期限アラート
@@ -479,7 +591,6 @@ def main():
 
         else:  # API連携
             st.markdown("---")
-            st.warning("⚠️ API連携にはYahoo Developer NetworkでコールバックURLの登録が必要です")
 
             if is_yahoo_auth:
                 st.success("✅ Yahoo認証済み")
@@ -488,37 +599,28 @@ def main():
                     st.cache_data.clear()
                     st.rerun()
             else:
-                redirect_uri = st.text_input(
-                    "コールバックURL",
-                    value="http://127.0.0.1/",
-                    key="yahoo_redirect"
+                st.info("認証コードがYahoo画面上に表示されます。それをコピーして下の欄に貼り付けてください。")
+
+                redirect_uri = "oob"
+                auth_url = yahoo_api.get_auth_url(redirect_uri)
+                st.markdown(f"**[1. Yahoo認証ページを開く]({auth_url})**")
+
+                auth_code = st.text_input(
+                    "2. 表示された認証コードを貼り付け",
+                    key="yahoo_auth_code",
+                    placeholder="認証コードをここにペースト"
                 )
 
-                if redirect_uri:
-                    auth_url = yahoo_api.get_auth_url(redirect_uri)
-                    st.markdown(f"[Yahoo認証ページを開く]({auth_url})")
-
-                    auth_result = st.text_input(
-                        "認証後のURL/コード",
-                        key="yahoo_result"
-                    )
-
-                    if auth_result and st.button("🔑 認証完了", key="yahoo_complete"):
-                        try:
-                            if "code=" in auth_result:
-                                parsed = urlparse(auth_result)
-                                qs = parse_qs(parsed.query)
-                                code = qs.get("code", [""])[0]
-                            else:
-                                code = auth_result.strip()
-
-                            if code:
-                                yahoo_api.get_token_from_code(code, redirect_uri)
-                                st.success("✅ 認証完了！")
-                                st.cache_data.clear()
-                                st.rerun()
-                        except YahooAPIError as e:
-                            st.error(f"エラー: {e}")
+                if auth_code and st.button("🔑 認証完了", key="yahoo_complete"):
+                    try:
+                        code = auth_code.strip()
+                        if code:
+                            yahoo_api.get_token_from_code(code, redirect_uri)
+                            st.success("✅ 認証完了！")
+                            st.cache_data.clear()
+                            st.rerun()
+                    except YahooAPIError as e:
+                        st.error(f"エラー: {e}")
 
     # 現在の日時
     now = datetime.now()
@@ -538,46 +640,32 @@ def main():
     yahoo_csv_summary = yahoo_importer.get_data_summary()
     is_yahoo_enabled = yahoo_api.is_authenticated() or yahoo_csv_summary["count"] > 0
 
-    # データ取得期間（今年と昨年の同時期）
+    # データ取得期間
+    current_start = datetime.combine(month_start, datetime.min.time())
+    current_end = datetime.combine(yesterday, datetime.max.time())
+    ly_start = datetime.combine(last_year_month_start, datetime.min.time())
+    ly_end = datetime.combine(last_year_yesterday, datetime.max.time())
+
+    # 今月・昨年・Yahooを並列取得（ディスクキャッシュがあれば即座に返る）
     with st.spinner("売上データを取得中..."):
-        # 楽天データ（今年）
-        try:
-            df_rakuten_current = load_rakuten_sales_cached(
-                datetime.combine(month_start, datetime.min.time()),
-                datetime.combine(yesterday, datetime.max.time())
-            )
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            f_current = executor.submit(_fetch_rakuten_sales, current_start, current_end)
+            f_last_year = executor.submit(_fetch_rakuten_sales, ly_start, ly_end)
+            f_yahoo = executor.submit(_fetch_yahoo_sales, current_start, current_end) if is_yahoo_enabled else None
+
+            df_rakuten_current = f_current.result()
             if not df_rakuten_current.empty and "source" not in df_rakuten_current.columns:
                 df_rakuten_current["source"] = "楽天"
-        except Exception as e:
-            st.error(f"楽天データ取得エラー: {e}")
-            df_rakuten_current = pd.DataFrame()
 
-        # Yahooデータ（今年）
-        df_yahoo_current = pd.DataFrame()
-        if is_yahoo_enabled:
-            try:
-                df_yahoo_current = load_yahoo_sales_cached(
-                    datetime.combine(month_start, datetime.min.time()),
-                    datetime.combine(yesterday, datetime.max.time())
-                )
-            except Exception as e:
-                st.warning(f"Yahooデータ取得エラー: {e}")
+            df_last_year = f_last_year.result()
+            if not df_last_year.empty and "source" not in df_last_year.columns:
+                df_last_year["source"] = "楽天"
+
+            df_yahoo_current = f_yahoo.result() if f_yahoo else pd.DataFrame()
 
         # データを統合
         dfs_current = [df for df in [df_rakuten_current, df_yahoo_current] if not df.empty]
         df_current = pd.concat(dfs_current, ignore_index=True) if dfs_current else pd.DataFrame()
-
-        # 昨年同時期のデータ（楽天のみ・Yahooは1年前のデータがない場合が多い）
-        try:
-            df_last_year = load_rakuten_sales_cached(
-                datetime.combine(last_year_month_start, datetime.min.time()),
-                datetime.combine(last_year_yesterday, datetime.max.time())
-            )
-            if not df_last_year.empty and "source" not in df_last_year.columns:
-                df_last_year["source"] = "楽天"
-        except Exception as e:
-            st.warning(f"昨年データ取得エラー（前年比較は表示されません）: {e}")
-            df_last_year = pd.DataFrame()
 
     processor = DataProcessor()
 
@@ -799,31 +887,34 @@ def main():
             with date_col2:
                 end_date = st.date_input("終了日", value=today)
 
-    # 分析用データ取得
-    with st.spinner(f"分析データを取得中... ({start_date} 〜 {end_date})"):
-        try:
-            df_rakuten_analysis = load_rakuten_sales_cached(
-                datetime.combine(start_date, datetime.min.time()),
-                datetime.combine(end_date, datetime.max.time())
-            )
-            if not df_rakuten_analysis.empty and "source" not in df_rakuten_analysis.columns:
-                df_rakuten_analysis["source"] = "楽天"
-        except Exception as e:
-            st.error(f"楽天データ取得エラー: {e}")
-            df_rakuten_analysis = pd.DataFrame()
-
-        df_yahoo_analysis = pd.DataFrame()
-        if is_yahoo_enabled:
+    # 分析用データ取得（今月なら既存データを再利用）
+    if analysis_period == "今月" and not df_current.empty:
+        df_analysis = df_current
+    else:
+        with st.spinner(f"分析データを取得中... ({start_date} 〜 {end_date})"):
             try:
-                df_yahoo_analysis = load_yahoo_sales_cached(
+                df_rakuten_analysis = load_rakuten_sales_cached(
                     datetime.combine(start_date, datetime.min.time()),
                     datetime.combine(end_date, datetime.max.time())
                 )
+                if not df_rakuten_analysis.empty and "source" not in df_rakuten_analysis.columns:
+                    df_rakuten_analysis["source"] = "楽天"
             except Exception as e:
-                st.warning(f"Yahooデータ取得エラー: {e}")
+                st.error(f"楽天データ取得エラー: {e}")
+                df_rakuten_analysis = pd.DataFrame()
 
-        dfs_analysis = [df for df in [df_rakuten_analysis, df_yahoo_analysis] if not df.empty]
-        df_analysis = pd.concat(dfs_analysis, ignore_index=True) if dfs_analysis else pd.DataFrame()
+            df_yahoo_analysis = pd.DataFrame()
+            if is_yahoo_enabled:
+                try:
+                    df_yahoo_analysis = load_yahoo_sales_cached(
+                        datetime.combine(start_date, datetime.min.time()),
+                        datetime.combine(end_date, datetime.max.time())
+                    )
+                except Exception as e:
+                    st.warning(f"Yahooデータ取得エラー: {e}")
+
+            dfs_analysis = [df for df in [df_rakuten_analysis, df_yahoo_analysis] if not df.empty]
+            df_analysis = pd.concat(dfs_analysis, ignore_index=True) if dfs_analysis else pd.DataFrame()
 
     if df_analysis.empty:
         st.warning("データがありません。期間を変更してください。")

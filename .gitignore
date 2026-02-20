@@ -28,7 +28,11 @@ env/
 # データファイル
 data/*.json
 data/*.csv
+data/cache/
 !data/.gitkeep
+
+# Yahoo認証トークン
+config/yahoo_token.json
 
 # macOS
 .DS_Store
