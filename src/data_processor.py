@@ -178,17 +178,15 @@ class DataProcessor:
         if df.empty:
             return pd.DataFrame(columns=["item_name", "quantity", "total_sales"])
 
-        group_cols = ["item_id", "item_name"]
+        agg_dict = {
+            "quantity": ("quantity", "sum"),
+            "total_sales": ("subtotal", "sum"),
+            "order_count": ("order_number", "nunique"),
+        }
         if "item_number" in df.columns:
-            df = df.copy()
-            df["item_number"] = df["item_number"].fillna("")
-            group_cols = ["item_number"] + group_cols
+            agg_dict["item_number"] = ("item_number", "first")
 
-        product = df.groupby(group_cols).agg(
-            quantity=("quantity", "sum"),
-            total_sales=("subtotal", "sum"),
-            order_count=("order_number", "nunique"),
-        ).reset_index()
+        product = df.groupby(["item_id", "item_name"]).agg(**agg_dict).reset_index()
 
         product = product.sort_values("total_sales", ascending=False)
 
