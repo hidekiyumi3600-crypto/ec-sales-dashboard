@@ -178,7 +178,7 @@ class DataProcessor:
         if df.empty:
             return pd.DataFrame(columns=["item_name", "quantity", "total_sales"])
 
-        product = df.groupby(["item_id", "item_name"]).agg(
+        product = df.groupby(["item_number", "item_id", "item_name"]).agg(
             quantity=("quantity", "sum"),
             total_sales=("subtotal", "sum"),
             order_count=("order_number", "nunique"),

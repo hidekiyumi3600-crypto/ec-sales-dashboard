@@ -1178,8 +1178,8 @@ def main():
 
                 # 商品テーブル
                 with st.expander("商品別データを表示"):
-                    display_df = target_product_df[["item_name", "quantity", "total_sales", "order_count"]].copy()
-                    display_df.columns = ["商品名", "販売数", "売上", "注文数"]
+                    display_df = target_product_df[["item_number", "item_name", "quantity", "total_sales", "order_count"]].copy()
+                    display_df.columns = ["管理番号", "商品名", "販売数", "売上", "注文数"]
                     display_df["売上"] = display_df["売上"].apply(lambda x: f"¥{x:,.0f}")
                     st.dataframe(display_df, use_container_width=True)
             else:
