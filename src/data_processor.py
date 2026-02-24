@@ -179,14 +179,23 @@ class DataProcessor:
             return pd.DataFrame(columns=["item_name", "quantity", "total_sales"])
 
         agg_dict = {
+            "item_name": ("item_name", "first"),
             "quantity": ("quantity", "sum"),
             "total_sales": ("subtotal", "sum"),
             "order_count": ("order_number", "nunique"),
         }
-        if "item_number" in df.columns:
-            agg_dict["item_number"] = ("item_number", "first")
 
-        product = df.groupby(["item_id", "item_name"]).agg(**agg_dict).reset_index()
+        # 管理番号がある場合はそれでグループ化（商品名のクーポン表記変更で分裂しない）
+        if "item_number" in df.columns:
+            df = df.copy()
+            # 管理番号が空の場合はitem_idで代替
+            df["_group_key"] = df["item_number"].fillna("").replace("", pd.NA)
+            df["_group_key"] = df["_group_key"].fillna(df["item_id"])
+            agg_dict["item_number"] = ("item_number", "first")
+            agg_dict["item_id"] = ("item_id", "first")
+            product = df.groupby("_group_key").agg(**agg_dict).reset_index(drop=True)
+        else:
+            product = df.groupby(["item_id", "item_name"]).agg(**agg_dict).reset_index()
 
         product = product.sort_values("total_sales", ascending=False)
 
