@@ -69,7 +69,7 @@ class DataProcessor:
                         "order_weekday": order_datetime.weekday() if order_datetime else None,
                         "item_id": item.get("itemId", ""),
                         "item_name": item.get("itemName", ""),
-                        "item_number": item.get("itemNumber", ""),
+                        "item_number": item.get("itemNumber") or "",
                         "unit_price": item.get("price", 0),
                         "quantity": item.get("units", 1),
                         "subtotal": item.get("price", 0) * item.get("units", 1),
@@ -180,6 +180,8 @@ class DataProcessor:
 
         group_cols = ["item_id", "item_name"]
         if "item_number" in df.columns:
+            df = df.copy()
+            df["item_number"] = df["item_number"].fillna("")
             group_cols = ["item_number"] + group_cols
 
         product = df.groupby(group_cols).agg(
