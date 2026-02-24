@@ -558,30 +558,37 @@ def main():
                 from dotenv import load_dotenv
                 import importlib
 
-                updates = {
-                    ss_key: new_ss,
-                    lk_key: new_lk,
-                    name_key: new_name,
-                }
-                _update_env_file(env_path, updates)
+                # 空の値は保存しない（既存値を保持）
+                updates = {}
+                if new_ss.strip():
+                    updates[ss_key] = new_ss.strip()
+                if new_lk.strip():
+                    updates[lk_key] = new_lk.strip()
+                if new_name.strip():
+                    updates[name_key] = new_name.strip()
 
-                # 環境変数を即座に反映
-                for k, v in updates.items():
-                    os.environ[k] = v
-                load_dotenv(env_path, override=True)
+                if not updates:
+                    st.error("保存する値がありません。入力欄が空です。")
+                else:
+                    _update_env_file(env_path, updates)
 
-                # config.settingsをリロードして新しい認証情報を反映
-                import config.settings
-                importlib.reload(config.settings)
+                    # 環境変数を即座に反映
+                    for k, v in updates.items():
+                        os.environ[k] = v
+                    load_dotenv(env_path, override=True)
 
-                st.cache_data.clear()
-                _clear_all_disk_cache()
-                # session_stateのキャッシュもクリア
-                for k in list(st.session_state.keys()):
-                    if k.startswith("sales_"):
-                        del st.session_state[k]
-                st.success(f"✅ {new_name or f'店舗{i}'}の認証情報を保存しました")
-                st.rerun()
+                    # config.settingsをリロードして新しい認証情報を反映
+                    import config.settings
+                    importlib.reload(config.settings)
+
+                    st.cache_data.clear()
+                    _clear_all_disk_cache()
+                    # session_stateのキャッシュもクリア
+                    for k in list(st.session_state.keys()):
+                        if k.startswith("sales_"):
+                            del st.session_state[k]
+                    st.success(f"✅ {new_name or f'店舗{i}'}の認証情報を保存しました")
+                    st.rerun()
 
             st.markdown("---")
 
