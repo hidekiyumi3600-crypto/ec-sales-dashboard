@@ -12,19 +12,19 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
+# set_page_configは他のStreamlitコマンドより先に呼ぶ必要がある
+st.set_page_config(
+    page_title="売上ダッシュボード",
+    page_icon="📊",
+    layout="wide",
+)
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.data_processor import DataProcessor
 from src.rakuten_api import RakutenAPI, RakutenAPIError, get_all_rakuten_apis, get_all_stores_sales_data
 from src.yahoo_api import YahooShoppingAPI, YahooAPIError
 from src.yahoo_csv_import import YahooCSVImporter
 from config.settings import RAKUTEN_STORES, DASHBOARD_PASSWORD
-
-
-st.set_page_config(
-    page_title="売上ダッシュボード",
-    page_icon="📊",
-    layout="wide",
-)
 
 # カスタムCSS
 st.markdown("""
@@ -375,26 +375,43 @@ def check_license_expiry(env_path: Path) -> list:
     return warnings
 
 
-def save_env_file(env_path: Path, env_vars: dict):
-    """環境変数ファイルを保存"""
-    lines = [
-        "# 楽天RMS API 認証情報",
-        f"RAKUTEN_SERVICE_SECRET={env_vars.get('RAKUTEN_SERVICE_SECRET', '')}",
-        f"RAKUTEN_LICENSE_KEY={env_vars.get('RAKUTEN_LICENSE_KEY', '')}",
-        f"RAKUTEN_SHOP_URL={env_vars.get('RAKUTEN_SHOP_URL', '')}",
-        "",
-        "# Yahoo!ショッピング API 認証情報",
-        f"YAHOO_CLIENT_ID={env_vars.get('YAHOO_CLIENT_ID', '')}",
-        f"YAHOO_CLIENT_SECRET={env_vars.get('YAHOO_CLIENT_SECRET', '')}",
-        f"YAHOO_SELLER_ID={env_vars.get('YAHOO_SELLER_ID', '')}",
-        "",
-        "# Google Sheets 設定",
-        f"GOOGLE_CREDENTIALS_PATH={env_vars.get('GOOGLE_CREDENTIALS_PATH', 'config/credentials.json')}",
-        f"SPREADSHEET_ID={env_vars.get('SPREADSHEET_ID', '')}",
-        "",
-    ]
+def _read_env_file(env_path: Path) -> dict:
+    """環境変数ファイルを読み込み（コメント・空行も保持）"""
+    env_vars = {}
+    if env_path.exists():
+        with open(env_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, value = line.split("=", 1)
+                    env_vars[key.strip()] = value.strip()
+    return env_vars
+
+
+def _update_env_file(env_path: Path, updates: dict):
+    """環境変数ファイルの特定キーのみ更新（他の値は保持）"""
+    lines = []
+    updated_keys = set()
+
+    if env_path.exists():
+        with open(env_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if "=" in stripped and not stripped.startswith("#"):
+                    key = stripped.split("=", 1)[0].strip()
+                    if key in updates:
+                        lines.append(f"{key}={updates[key]}\n")
+                        updated_keys.add(key)
+                        continue
+                lines.append(line if line.endswith("\n") else line + "\n")
+
+    # 新規キーを末尾に追加
+    for key, value in updates.items():
+        if key not in updated_keys:
+            lines.append(f"{key}={value}\n")
+
     with open(env_path, "w") as f:
-        f.write("\n".join(lines))
+        f.writelines(lines)
 
 
 def _get_auth_cookie() -> str:
@@ -494,48 +511,79 @@ def main():
     # API認証情報の設定
     st.sidebar.markdown("---")
 
-    # 楽天API設定
+    # 楽天API設定（店舗ごと）
     with st.sidebar.expander("🔑 楽天API設定"):
         st.caption("ライセンスキーは約3ヶ月で更新が必要です")
 
-        # 現在の設定を読み込み
         env_path = Path(__file__).parent.parent / ".env"
-        env_vars = {}
+        env_vars = _read_env_file(env_path)
 
-        if env_path.exists():
-            with open(env_path, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if "=" in line and not line.startswith("#"):
-                        key, value = line.split("=", 1)
-                        env_vars[key] = value
+        # 最大3店舗分のフォームを表示
+        for i in range(1, 4):
+            ss_key = f"RAKUTEN_SERVICE_SECRET_{i}"
+            lk_key = f"RAKUTEN_LICENSE_KEY_{i}"
+            name_key = f"RAKUTEN_SHOP_NAME_{i}"
 
-        new_secret = st.text_input(
-            "サービスシークレット",
-            value=env_vars.get("RAKUTEN_SERVICE_SECRET", ""),
-            type="password",
-            key="rakuten_secret"
-        )
-        new_key = st.text_input(
-            "ライセンスキー",
-            value=env_vars.get("RAKUTEN_LICENSE_KEY", ""),
-            type="password",
-            key="rakuten_key"
-        )
-        new_shop = st.text_input(
-            "ショップURL",
-            value=env_vars.get("RAKUTEN_SHOP_URL", ""),
-            key="rakuten_shop"
-        )
+            # 設定がある店舗のみ表示（ただし店舗1,2は常に表示）
+            current_ss = env_vars.get(ss_key, "")
+            current_lk = env_vars.get(lk_key, "")
+            current_name = env_vars.get(name_key, "")
 
-        if st.button("💾 楽天認証情報を保存", key="save_rakuten"):
-            env_vars["RAKUTEN_SERVICE_SECRET"] = new_secret
-            env_vars["RAKUTEN_LICENSE_KEY"] = new_key
-            env_vars["RAKUTEN_SHOP_URL"] = new_shop
-            save_env_file(env_path, env_vars)
-            st.cache_data.clear()
-            st.success("✅ 保存しました")
-            st.rerun()
+            if i >= 3 and not current_ss:
+                continue
+
+            st.markdown(f"**店舗{i}: {current_name or '未設定'}**")
+
+            new_name = st.text_input(
+                "店舗名",
+                value=current_name,
+                key=f"rakuten_name_{i}",
+                placeholder=f"例: 楽天ショップ{i}"
+            )
+            new_ss = st.text_input(
+                "サービスシークレット",
+                value=current_ss,
+                type="password",
+                key=f"rakuten_ss_{i}"
+            )
+            new_lk = st.text_input(
+                "ライセンスキー",
+                value=current_lk,
+                type="password",
+                key=f"rakuten_lk_{i}"
+            )
+
+            if st.button(f"💾 店舗{i}を保存", key=f"save_rakuten_{i}"):
+                import os
+                from dotenv import load_dotenv
+                import importlib
+
+                updates = {
+                    ss_key: new_ss,
+                    lk_key: new_lk,
+                    name_key: new_name,
+                }
+                _update_env_file(env_path, updates)
+
+                # 環境変数を即座に反映
+                for k, v in updates.items():
+                    os.environ[k] = v
+                load_dotenv(env_path, override=True)
+
+                # config.settingsをリロードして新しい認証情報を反映
+                import config.settings
+                importlib.reload(config.settings)
+
+                st.cache_data.clear()
+                _clear_all_disk_cache()
+                # session_stateのキャッシュもクリア
+                for k in list(st.session_state.keys()):
+                    if k.startswith("sales_"):
+                        del st.session_state[k]
+                st.success(f"✅ {new_name or f'店舗{i}'}の認証情報を保存しました")
+                st.rerun()
+
+            st.markdown("---")
 
     # Yahoo設定
     with st.sidebar.expander("🔶 Yahoo設定"):
@@ -638,11 +686,8 @@ def main():
     last_year_yesterday = yesterday.replace(year=yesterday.year - 1)
     last_year_month_start = month_start.replace(year=month_start.year - 1)
 
-    # Yahooデータ状態を確認（API認証 または CSVデータあり）
-    yahoo_api = YahooShoppingAPI()
-    yahoo_importer = YahooCSVImporter()
-    yahoo_csv_summary = yahoo_importer.get_data_summary()
-    is_yahoo_enabled = yahoo_api.is_authenticated() or yahoo_csv_summary["count"] > 0
+    # Yahooデータ状態を確認（現在はAPI未連携のため無効化）
+    is_yahoo_enabled = False
 
     # データ取得期間
     current_start = datetime.combine(month_start, datetime.min.time())
@@ -661,30 +706,25 @@ def main():
         # 初回取得: プログレスバー付きで並列取得
         _progress = st.progress(0, text="楽天APIに接続中...")
 
-        with ThreadPoolExecutor(max_workers=3) as executor:
+        with ThreadPoolExecutor(max_workers=2) as executor:
             f_current = executor.submit(_fetch_rakuten_sales, current_start, current_end)
             f_last_year = executor.submit(_fetch_rakuten_sales, ly_start, ly_end)
-            f_yahoo = executor.submit(_fetch_yahoo_sales, current_start, current_end) if is_yahoo_enabled else None
 
             _progress.progress(10, text="今月の売上データを取得中...")
             df_rakuten_current = f_current.result()
             if not df_rakuten_current.empty and "source" not in df_rakuten_current.columns:
                 df_rakuten_current["source"] = "楽天"
 
-            _progress.progress(50, text="昨年の比較データを取得中...")
+            _progress.progress(60, text="昨年の比較データを取得中...")
             df_last_year = f_last_year.result()
             if not df_last_year.empty and "source" not in df_last_year.columns:
                 df_last_year["source"] = "楽天"
-
-            _progress.progress(80, text="Yahooデータを確認中...")
-            df_yahoo_current = f_yahoo.result() if f_yahoo else pd.DataFrame()
 
         _progress.progress(100, text="完了!")
         _progress.empty()
 
         # データを統合
-        dfs_current = [df for df in [df_rakuten_current, df_yahoo_current] if not df.empty]
-        df_current = pd.concat(dfs_current, ignore_index=True) if dfs_current else pd.DataFrame()
+        df_current = df_rakuten_current
 
         # session_stateに保存（次回リロード時は即表示）
         st.session_state[_cache_key] = {

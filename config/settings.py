@@ -12,9 +12,11 @@ def _get_secret(key: str, default: str = "") -> str:
         return value
     try:
         import streamlit as st
-        return st.secrets.get(key, default)
+        if hasattr(st, "secrets") and len(st.secrets) > 0:
+            return st.secrets.get(key, default)
     except Exception:
-        return default
+        pass
+    return default
 
 # 楽天RMS API設定（複数店舗対応）
 RAKUTEN_STORES = []
