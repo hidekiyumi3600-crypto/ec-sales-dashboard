@@ -178,7 +178,11 @@ class DataProcessor:
         if df.empty:
             return pd.DataFrame(columns=["item_name", "quantity", "total_sales"])
 
-        product = df.groupby(["item_number", "item_id", "item_name"]).agg(
+        group_cols = ["item_id", "item_name"]
+        if "item_number" in df.columns:
+            group_cols = ["item_number"] + group_cols
+
+        product = df.groupby(group_cols).agg(
             quantity=("quantity", "sum"),
             total_sales=("subtotal", "sum"),
             order_count=("order_number", "nunique"),
