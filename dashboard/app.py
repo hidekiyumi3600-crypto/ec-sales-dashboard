@@ -1004,9 +1004,21 @@ def main():
 
     # 集計
     daily_df = processor.aggregate_daily_sales(df_filtered)
-    product_df = processor.aggregate_product_sales(df_filtered)
+    try:
+        product_df = processor.aggregate_product_sales(df_filtered)
+    except Exception as e:
+        st.error(f"商品別集計エラー: {e}")
+        product_df = pd.DataFrame()
     hourly_df = processor.aggregate_hourly_sales(df_filtered)
     weekday_df = processor.aggregate_weekday_sales(df_filtered)
+
+    # デバッグ情報（問題解決後に削除）
+    with st.expander("🔍 デバッグ情報"):
+        st.write(f"df_filtered: {df_filtered.shape}, columns: {df_filtered.columns.tolist()}")
+        st.write(f"product_df: {product_df.shape}, empty: {product_df.empty}")
+        if not product_df.empty:
+            st.write(f"product_df columns: {product_df.columns.tolist()}")
+            st.dataframe(product_df.head(3))
 
     # ===== グラフセクション =====
     tab1, tab2, tab3 = st.tabs(["📈 売上推移", "🏷️ 商品分析", "⏰ 時間帯分析"])
