@@ -1109,11 +1109,35 @@ def main():
                 else:
                     st.info(f"{selected_view}のデータがありません")
 
-            # 日別テーブル
+            # 日別テーブル（店舗別）
             with st.expander("日別データを表示"):
-                display_df = daily_df[["date", "order_count", "total_sales"]].copy()
-                display_df.columns = ["日付", "注文数", "売上"]
-                display_df["売上"] = display_df["売上"].apply(lambda x: f"¥{x:,.0f}")
+                # 日付ごとに店舗別売上を集計
+                daily_store_rows = []
+                all_dates = sorted(df_filtered["order_date"].dt.date.unique())
+                store_names_d = [store["name"] for store in RAKUTEN_STORES] if RAKUTEN_STORES else []
+
+                for d in all_dates:
+                    day_data = df_filtered[df_filtered["order_date"].dt.date == d]
+                    row = {"日付": d}
+                    total_sales = 0
+                    total_orders = 0
+                    for sn in store_names_d:
+                        s_df = day_data[day_data["source"] == sn]
+                        if not s_df.empty:
+                            s_orders = s_df.drop_duplicates(subset=["order_number"])
+                            s_sales = s_orders["order_net_sales"].sum()
+                        else:
+                            s_sales = 0
+                        row[f"{sn} 売上"] = s_sales
+                        total_sales += s_sales
+                    row["合計 売上"] = total_sales
+                    daily_store_rows.append(row)
+
+                display_df = pd.DataFrame(daily_store_rows)
+                # 金額フォーマット
+                for col in display_df.columns:
+                    if "売上" in col:
+                        display_df[col] = display_df[col].apply(lambda x: f"¥{x:,.0f}")
                 st.dataframe(display_df, use_container_width=True)
 
     with tab2:
