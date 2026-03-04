@@ -2,8 +2,8 @@ name: Daily Chatwork Report
 
 on:
   schedule:
-    # テスト: JST 15:20 = UTC 6:20
-    - cron: '20 6 * * *'
+    # テスト: JST 16:32 = UTC 7:32
+    - cron: '32 7 * * *'
   workflow_dispatch:
     inputs:
       date:
