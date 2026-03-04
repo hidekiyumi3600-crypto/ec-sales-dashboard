@@ -1,0 +1,41 @@
+name: Daily Chatwork Report
+
+on:
+  schedule:
+    # テスト: JST 15:20 = UTC 6:20
+    - cron: '20 6 * * *'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: '対象日（YYYY-MM-DD）空欄で前日'
+        required: false
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests pandas python-dotenv
+
+      - name: Send Chatwork report
+        env:
+          CHATWORK_API_TOKEN: ${{ secrets.CHATWORK_API_TOKEN }}
+          CHATWORK_ROOM_ID: ${{ secrets.CHATWORK_ROOM_ID }}
+          RAKUTEN_SERVICE_SECRET_1: ${{ secrets.RAKUTEN_SERVICE_SECRET_1 }}
+          RAKUTEN_LICENSE_KEY_1: ${{ secrets.RAKUTEN_LICENSE_KEY_1 }}
+          RAKUTEN_SHOP_NAME_1: ${{ secrets.RAKUTEN_SHOP_NAME_1 }}
+          RAKUTEN_SERVICE_SECRET_2: ${{ secrets.RAKUTEN_SERVICE_SECRET_2 }}
+          RAKUTEN_LICENSE_KEY_2: ${{ secrets.RAKUTEN_LICENSE_KEY_2 }}
+          RAKUTEN_SHOP_NAME_2: ${{ secrets.RAKUTEN_SHOP_NAME_2 }}
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            python -m src.chatwork --send-now --date "${{ github.event.inputs.date }}"
+          else
+            python -m src.chatwork --send-now
+          fi

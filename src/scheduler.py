@@ -10,6 +10,7 @@ sys.path.insert(0, ".")
 from src.rakuten_api import RakutenAPI, RakutenAPIError
 from src.data_processor import DataProcessor
 from src.google_sheet import GoogleSheetClient, GoogleSheetError
+from src.chatwork import send_daily_report, ChatworkError
 
 # ロギング設定
 logging.basicConfig(
@@ -169,6 +170,17 @@ def run_monthly_aggregation():
         logger.error(f"予期しないエラー: {e}")
 
 
+def run_daily_notification():
+    """Chatwork日次通知ジョブ"""
+    logger.info("Chatwork日次通知ジョブ開始")
+    try:
+        send_daily_report()
+    except ChatworkError as e:
+        logger.error(f"Chatwork送信エラー: {e}")
+    except Exception as e:
+        logger.error(f"予期しないエラー: {e}")
+
+
 def start_scheduler():
     """スケジューラーを開始"""
     scheduler = BlockingScheduler()
@@ -187,6 +199,14 @@ def start_scheduler():
         trigger=CronTrigger(day_of_week="mon", hour=7, minute=0),
         id="weekly_aggregation",
         name="週次売上集計",
+    )
+
+    # Chatwork日次通知: 毎日午前9時に実行
+    scheduler.add_job(
+        run_daily_notification,
+        trigger=CronTrigger(hour=9, minute=0),
+        id="daily_notification",
+        name="Chatwork日次通知",
     )
 
     # 月次集計: 毎月1日午前8時に実行
@@ -217,6 +237,7 @@ def main():
     parser.add_argument("--run-daily", action="store_true", help="日次集計を即時実行")
     parser.add_argument("--run-weekly", action="store_true", help="週次集計を即時実行")
     parser.add_argument("--run-monthly", action="store_true", help="月次集計を即時実行")
+    parser.add_argument("--send-chatwork", action="store_true", help="Chatwork日次通知を即時送信")
     parser.add_argument("--start", action="store_true", help="スケジューラーを開始")
     args = parser.parse_args()
 
@@ -226,6 +247,8 @@ def main():
         run_weekly_aggregation()
     elif args.run_monthly:
         run_monthly_aggregation()
+    elif args.send_chatwork:
+        run_daily_notification()
     elif args.start:
         start_scheduler()
     else:

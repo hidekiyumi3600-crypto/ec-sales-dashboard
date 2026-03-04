@@ -65,6 +65,10 @@ MERCARI_ACCESS_TOKEN = _get_secret("MERCARI_ACCESS_TOKEN")
 GOOGLE_CREDENTIALS_PATH = _get_secret("GOOGLE_CREDENTIALS_PATH", "config/credentials.json")
 SPREADSHEET_ID = _get_secret("SPREADSHEET_ID")
 
+# Chatwork通知設定
+CHATWORK_API_TOKEN = _get_secret("CHATWORK_API_TOKEN")
+CHATWORK_ROOM_ID = _get_secret("CHATWORK_ROOM_ID")
+
 # ダッシュボード認証（SHA-256ハッシュ済みパスワード）
 DASHBOARD_PASSWORD = _get_secret("DASHBOARD_PASSWORD")
 
