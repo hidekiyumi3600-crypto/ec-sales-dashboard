@@ -33,6 +33,9 @@ jobs:
           RAKUTEN_SERVICE_SECRET_2: ${{ secrets.RAKUTEN_SERVICE_SECRET_2 }}
           RAKUTEN_LICENSE_KEY_2: ${{ secrets.RAKUTEN_LICENSE_KEY_2 }}
           RAKUTEN_SHOP_NAME_2: ${{ secrets.RAKUTEN_SHOP_NAME_2 }}
+          RAKUTEN_SERVICE_SECRET_3: ${{ secrets.RAKUTEN_SERVICE_SECRET_3 }}
+          RAKUTEN_LICENSE_KEY_3: ${{ secrets.RAKUTEN_LICENSE_KEY_3 }}
+          RAKUTEN_SHOP_NAME_3: ${{ secrets.RAKUTEN_SHOP_NAME_3 }}
         run: |
           if [ -n "${{ github.event.inputs.date }}" ]; then
             python -m src.chatwork --send-now --date "${{ github.event.inputs.date }}"
