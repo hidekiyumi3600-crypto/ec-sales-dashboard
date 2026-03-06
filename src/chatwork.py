@@ -167,7 +167,6 @@ def send_daily_report(target_date=None):
     Args:
         target_date: 対象日（datetime.date）。Noneの場合は前日。
     """
-    from concurrent.futures import ThreadPoolExecutor
     from src.rakuten_api import get_all_stores_sales_data
     from src.data_processor import DataProcessor
 
@@ -193,27 +192,22 @@ def send_daily_report(target_date=None):
 
     logger.info(f"Chatwork日次通知: {target_date} のデータ取得中")
 
-    # 4期間を並列取得
-    fetch_tasks = {
-        "daily": (day_start, day_end),
-        "monthly": (month_start, day_end),
-    }
+    # 4期間を順次取得（並列だと楽天APIのレート制限に引っかかるため）
+    fetch_tasks = [
+        ("daily", day_start, day_end),
+        ("monthly", month_start, day_end),
+    ]
     if ly_date:
-        fetch_tasks["ly_daily"] = (ly_day_start, ly_day_end)
-        fetch_tasks["ly_monthly"] = (ly_month_start, ly_day_end.replace(year=ly_date.year) if ly_date else None)
+        fetch_tasks.append(("ly_daily", ly_day_start, ly_day_end))
+        fetch_tasks.append(("ly_monthly", ly_month_start, ly_day_end.replace(year=ly_date.year)))
 
     results = {}
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            key: executor.submit(get_all_stores_sales_data, s, e)
-            for key, (s, e) in fetch_tasks.items()
-        }
-        for key, future in futures.items():
-            try:
-                results[key] = future.result()
-            except Exception as e:
-                logger.warning(f"{key}データ取得失敗: {e}")
-                results[key] = []
+    for key, s, e in fetch_tasks:
+        try:
+            results[key] = get_all_stores_sales_data(s, e)
+        except Exception as ex:
+            logger.warning(f"{key}データ取得失敗: {ex}")
+            results[key] = []
 
     # 集計
     daily_stats, daily_store_stats = _collect_stats(processor, results["daily"])
