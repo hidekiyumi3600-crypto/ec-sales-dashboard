@@ -1,6 +1,6 @@
 """Chatwork日次売上通知モジュール"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -171,7 +171,8 @@ def send_daily_report(target_date=None):
     from src.data_processor import DataProcessor
 
     if target_date is None:
-        target_date = (datetime.now() - timedelta(days=1)).date()
+        jst = timezone(timedelta(hours=9))
+        target_date = (datetime.now(jst) - timedelta(days=1)).date()
 
     processor = DataProcessor()
 
