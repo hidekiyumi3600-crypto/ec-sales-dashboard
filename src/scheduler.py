@@ -1,16 +1,19 @@
 """スケジューラーモジュール"""
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 import sys
 sys.path.insert(0, ".")
-from src.rakuten_api import RakutenAPI, RakutenAPIError
+from src.rakuten_api import RakutenAPI, RakutenAPIError, get_all_stores_sales_data
 from src.data_processor import DataProcessor
 from src.google_sheet import GoogleSheetClient, GoogleSheetError
 from src.chatwork import send_daily_report, ChatworkError
+
+# JST タイムゾーン
+JST = timezone(timedelta(hours=9))
 
 # ロギング設定
 logging.basicConfig(
@@ -28,13 +31,14 @@ def run_daily_aggregation():
     logger.info("日次集計ジョブ開始")
 
     try:
-        # 前日のデータを取得
-        end_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        start_date = end_date - timedelta(days=1)
+        # 前日のデータを取得（JSTベース）
+        now_jst = datetime.now(JST)
+        today_jst = now_jst.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        end_date = today_jst  # 今日の0:00
+        start_date = end_date - timedelta(days=1)  # 昨日の0:00
 
-        # 楽天APIからデータ取得
-        api = RakutenAPI()
-        orders = api.get_sales_data(start_date, end_date)
+        # 全店舗の楽天APIからデータ取得
+        orders = get_all_stores_sales_data(start_date, end_date)
 
         if not orders:
             logger.info("注文データなし")
@@ -81,13 +85,13 @@ def run_weekly_aggregation():
     logger.info("週次集計ジョブ開始")
 
     try:
-        # 過去7日間のデータを取得
-        end_date = datetime.now()
+        # 過去7日間のデータを取得（JSTベース）
+        now_jst = datetime.now(JST)
+        end_date = now_jst.replace(tzinfo=None)
         start_date = end_date - timedelta(days=7)
 
-        # 楽天APIからデータ取得
-        api = RakutenAPI()
-        orders = api.get_sales_data(start_date, end_date)
+        # 全店舗の楽天APIからデータ取得
+        orders = get_all_stores_sales_data(start_date, end_date)
 
         if not orders:
             logger.info("注文データなし")
@@ -129,15 +133,14 @@ def run_monthly_aggregation():
     logger.info("月次集計ジョブ開始")
 
     try:
-        # 前月のデータを取得
-        today = datetime.now()
-        first_day_this_month = today.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        last_day_last_month = first_day_this_month - timedelta(days=1)
-        first_day_last_month = last_day_last_month.replace(day=1)
+        # 前月のデータを取得（JSTベース）
+        now_jst = datetime.now(JST)
+        first_day_this_month = now_jst.replace(day=1, hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+        first_day_last_month = (first_day_this_month - timedelta(days=1)).replace(day=1)
+        end_date = first_day_this_month  # 今月1日の0:00 = 前月末日の24:00
 
-        # 楽天APIからデータ取得
-        api = RakutenAPI()
-        orders = api.get_sales_data(first_day_last_month, last_day_last_month)
+        # 全店舗の楽天APIからデータ取得
+        orders = get_all_stores_sales_data(first_day_last_month, end_date)
 
         if not orders:
             logger.info("注文データなし")
