@@ -686,29 +686,26 @@ def main():
     today = now.date()
     yesterday = today - timedelta(days=1)
 
-    # 今月の期間
-    month_start = today.replace(day=1)
-    # 今月の表示終了日（月初は今日、それ以外は前日）
-    month_end = max(yesterday, month_start)
+    # 今月の期間（昨日が属する月の1日〜昨日）
+    month_start = yesterday.replace(day=1)
+    month_end = yesterday
 
     # 昨年同時期
     last_year_yesterday = yesterday.replace(year=yesterday.year - 1)
     last_year_month_start = month_start.replace(year=month_start.year - 1)
-    last_year_month_end = month_end.replace(year=month_end.year - 1)
+    last_year_month_end = last_year_yesterday
 
     # Yahooデータ状態を確認（現在はAPI未連携のため無効化）
     is_yahoo_enabled = False
 
-    # データ取得期間（昨日と今月の両方をカバー）
-    fetch_start = min(month_start, yesterday)
-    current_start = datetime.combine(fetch_start, datetime.min.time())
+    # データ取得期間
+    current_start = datetime.combine(month_start, datetime.min.time())
     current_end = datetime.combine(month_end, datetime.max.time())
-    ly_fetch_start = min(last_year_month_start, last_year_yesterday)
-    ly_start = datetime.combine(ly_fetch_start, datetime.min.time())
+    ly_start = datetime.combine(last_year_month_start, datetime.min.time())
     ly_end = datetime.combine(last_year_month_end, datetime.max.time())
 
     # session_stateキャッシュキー（日付が変わるとキーも変わる）
-    _cache_key = f"sales_{fetch_start}_{month_end}"
+    _cache_key = f"sales_{month_start}_{month_end}"
 
     if _cache_key in st.session_state:
         # キャッシュヒット → API呼び出しなしで即表示
