@@ -686,24 +686,29 @@ def main():
     today = now.date()
     yesterday = today - timedelta(days=1)
 
-    # 今月の期間（前日まで）
+    # 今月の期間
     month_start = today.replace(day=1)
+    # 今月の表示終了日（月初は今日、それ以外は前日）
+    month_end = max(yesterday, month_start)
 
-    # 昨年同時期（前日までで比較）
+    # 昨年同時期
     last_year_yesterday = yesterday.replace(year=yesterday.year - 1)
     last_year_month_start = month_start.replace(year=month_start.year - 1)
+    last_year_month_end = month_end.replace(year=month_end.year - 1)
 
     # Yahooデータ状態を確認（現在はAPI未連携のため無効化）
     is_yahoo_enabled = False
 
-    # データ取得期間
-    current_start = datetime.combine(month_start, datetime.min.time())
-    current_end = datetime.combine(yesterday, datetime.max.time())
-    ly_start = datetime.combine(last_year_month_start, datetime.min.time())
-    ly_end = datetime.combine(last_year_yesterday, datetime.max.time())
+    # データ取得期間（昨日と今月の両方をカバー）
+    fetch_start = min(month_start, yesterday)
+    current_start = datetime.combine(fetch_start, datetime.min.time())
+    current_end = datetime.combine(month_end, datetime.max.time())
+    ly_fetch_start = min(last_year_month_start, last_year_yesterday)
+    ly_start = datetime.combine(ly_fetch_start, datetime.min.time())
+    ly_end = datetime.combine(last_year_month_end, datetime.max.time())
 
     # session_stateキャッシュキー（日付が変わるとキーも変わる）
-    _cache_key = f"sales_{month_start}_{yesterday}"
+    _cache_key = f"sales_{fetch_start}_{month_end}"
 
     if _cache_key in st.session_state:
         # キャッシュヒット → API呼び出しなしで即表示
@@ -747,9 +752,9 @@ def main():
     yesterday_stats = get_period_sales(df_current, yesterday, yesterday)
     last_year_yesterday_stats = get_period_sales(df_last_year, last_year_yesterday, last_year_yesterday)
 
-    # 今月の売上（前日まで）
-    month_stats = get_period_sales(df_current, month_start, yesterday)
-    last_year_month_stats = get_period_sales(df_last_year, last_year_month_start, last_year_yesterday)
+    # 今月の売上
+    month_stats = get_period_sales(df_current, month_start, month_end)
+    last_year_month_stats = get_period_sales(df_last_year, last_year_month_start, last_year_month_end)
 
     # モール別集計
     def get_source_sales(df, start_date, end_date, source):
@@ -767,8 +772,8 @@ def main():
     yahoo_yesterday = get_source_sales(df_current, yesterday, yesterday, "Yahoo")
 
     # 今月のモール別
-    rakuten_month = get_source_sales(df_current, month_start, yesterday, "楽天")
-    yahoo_month = get_source_sales(df_current, month_start, yesterday, "Yahoo")
+    rakuten_month = get_source_sales(df_current, month_start, month_end, "楽天")
+    yahoo_month = get_source_sales(df_current, month_start, month_end, "Yahoo")
 
     # ===== ヘッダーセクション：主要KPI =====
     st.markdown("---")
@@ -810,7 +815,7 @@ def main():
 
     # 今月の売上（前日まで）
     with col2:
-        st.markdown(f"### 📅 今月 ({month_start.strftime('%m/01')}〜{yesterday.strftime('%m/%d')})")
+        st.markdown(f"### 📅 今月 ({month_start.strftime('%m/%d')}〜{month_end.strftime('%m/%d')})")
 
         diff, rate = format_delta(month_stats["sales"], last_year_month_stats["sales"])
 
@@ -827,7 +832,7 @@ def main():
             if is_yahoo_enabled:
                 st.caption(f"🔶 Yahoo: ¥{yahoo_month['sales']:,.0f}")
 
-        days_count = (yesterday - month_start).days + 1
+        days_count = (month_end - month_start).days + 1
         avg_daily = month_stats["sales"] / max(days_count, 1)
 
         st.metric("注文数", f"{month_stats['orders']}件")
@@ -889,11 +894,11 @@ def main():
 
             # 今年の店舗別売上
             store_yesterday = get_source_sales(df_current, yesterday, yesterday, store_name)
-            store_month = get_source_sales(df_current, month_start, yesterday, store_name)
+            store_month = get_source_sales(df_current, month_start, month_end, store_name)
 
             # 昨年の店舗別売上
             store_yesterday_ly = get_source_sales(df_last_year, last_year_yesterday, last_year_yesterday, store_name)
-            store_month_ly = get_source_sales(df_last_year, last_year_month_start, last_year_yesterday, store_name)
+            store_month_ly = get_source_sales(df_last_year, last_year_month_start, last_year_month_end, store_name)
 
             # 昨日
             st.markdown(f"**昨日** ({yesterday.strftime('%m/%d')})")
@@ -911,7 +916,7 @@ def main():
             st.markdown("---")
 
             # 今月
-            st.markdown(f"**今月** ({month_start.strftime('%m/01')}〜{yesterday.strftime('%m/%d')})")
+            st.markdown(f"**今月** ({month_start.strftime('%m/%d')}〜{month_end.strftime('%m/%d')})")
             diff_m, rate_m = format_delta(store_month['sales'], store_month_ly['sales'])
             st.metric(
                 label="売上累計",
@@ -922,7 +927,7 @@ def main():
             st.caption(f"注文数: {store_month['orders']}件")
 
             # 日平均
-            days_count = (yesterday - month_start).days + 1
+            days_count = (month_end - month_start).days + 1
             store_avg = store_month["sales"] / max(days_count, 1)
             st.caption(f"日平均: ¥{store_avg:,.0f}")
 
