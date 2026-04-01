@@ -2,7 +2,6 @@
 import hashlib
 import sys
 import time as time_module
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -712,28 +711,21 @@ def main():
         df_current = st.session_state[_cache_key]["current"]
         df_last_year = st.session_state[_cache_key]["last_year"]
     else:
-        # 初回取得: プログレスバー付きで並列取得
+        # 初回取得: 順次取得（レート制限回避）
         _progress = st.progress(0, text="楽天APIに接続中...")
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            f_current = executor.submit(_fetch_rakuten_sales, current_start, current_end)
-            f_last_year = executor.submit(_fetch_rakuten_sales, ly_start, ly_end)
+        _progress.progress(10, text="今月の売上データを取得中...")
+        df_current = _fetch_rakuten_sales(current_start, current_end)
+        if not df_current.empty and "source" not in df_current.columns:
+            df_current["source"] = "楽天"
 
-            _progress.progress(10, text="今月の売上データを取得中...")
-            df_rakuten_current = f_current.result()
-            if not df_rakuten_current.empty and "source" not in df_rakuten_current.columns:
-                df_rakuten_current["source"] = "楽天"
-
-            _progress.progress(60, text="昨年の比較データを取得中...")
-            df_last_year = f_last_year.result()
-            if not df_last_year.empty and "source" not in df_last_year.columns:
-                df_last_year["source"] = "楽天"
+        _progress.progress(60, text="昨年の比較データを取得中...")
+        df_last_year = _fetch_rakuten_sales(ly_start, ly_end)
+        if not df_last_year.empty and "source" not in df_last_year.columns:
+            df_last_year["source"] = "楽天"
 
         _progress.progress(100, text="完了!")
         _progress.empty()
-
-        # データを統合
-        df_current = df_rakuten_current
 
         # session_stateに保存（次回リロード時は即表示）
         st.session_state[_cache_key] = {

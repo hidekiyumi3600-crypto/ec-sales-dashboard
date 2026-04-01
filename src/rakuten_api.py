@@ -296,9 +296,7 @@ def _fetch_store_sales(api, start_date: datetime, end_date: datetime) -> list:
 
 
 def get_all_stores_sales_data(start_date: datetime, end_date: datetime) -> list:
-    """全店舗の売上データを並列取得"""
-    from concurrent.futures import ThreadPoolExecutor
-
+    """全店舗の売上データを順次取得（レート制限回避）"""
     apis = get_all_rakuten_apis()
 
     if not apis:
@@ -306,19 +304,8 @@ def get_all_stores_sales_data(start_date: datetime, end_date: datetime) -> list:
         return []
 
     all_orders = []
-
-    # 2店舗以上なら並列取得
-    if len(apis) >= 2:
-        with ThreadPoolExecutor(max_workers=len(apis)) as executor:
-            futures = [
-                executor.submit(_fetch_store_sales, api, start_date, end_date)
-                for api in apis
-            ]
-            for future in futures:
-                all_orders.extend(future.result())
-    else:
-        for api in apis:
-            all_orders.extend(_fetch_store_sales(api, start_date, end_date))
+    for api in apis:
+        all_orders.extend(_fetch_store_sales(api, start_date, end_date))
 
     return all_orders
 
